@@ -1,0 +1,1 @@
+# dwm-config-64bits

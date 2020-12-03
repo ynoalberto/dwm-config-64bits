@@ -65,6 +65,7 @@ static const char *dmenucmd[] = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont,
 static const char *termcmd[]  = { "terminator", NULL };
 static const char *pcmanfmcmd[]  = { "pcmanfm", NULL };
 static const char *roficmd[]  = { "rofi", "-show", "drun", "-sidebar-mode", "-show-icons", "-theme", "Void.rasi", "-location", "1", "-xoffset", "9", "-yoffset", "27", "-columns", "2", NULL };
+static const char *rangercmd[]  = { "kitty", "ranger", NULL };
 
 static Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -106,6 +107,7 @@ static Key keys[] = {
         { MODKEY|ShiftMask,             XK_u, spawn,               {.v = pcmanfmcmd } },
         { MODKEY|ShiftMask,             XK_y, spawn,               {.v = roficmd } },
 	{ MODKEY|ShiftMask,             XK_q,      quit,           {0} },
+	{ MODKEY,                       XK_r, spawn,               {.v = rangercmd } },
 };
 
 /* button definitions */

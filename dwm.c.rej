@@ -1,104 +1,43 @@
 --- dwm.c
 +++ dwm.c
-@@ -56,12 +56,27 @@
- #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
- #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
- 
-+#define SYSTEM_TRAY_REQUEST_DOCK    0
-+/* XEMBED messages */
-+#define XEMBED_EMBEDDED_NOTIFY      0
-+#define XEMBED_WINDOW_ACTIVATE      1
-+#define XEMBED_FOCUS_IN             4
-+#define XEMBED_MODALITY_ON         10
-+#define XEMBED_MAPPED              (1 << 0)
-+#define XEMBED_WINDOW_ACTIVATE      1
-+#define XEMBED_WINDOW_DEACTIVATE    2
-+#define VERSION_MAJOR               0
-+#define VERSION_MINOR               0
-+#define XEMBED_EMBEDDED_VERSION (VERSION_MAJOR << 16) | VERSION_MINOR
-+
- /* enums */
- enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
- enum { SchemeNorm, SchemeSel }; /* color schemes */
- enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
-+       NetSystemTray, NetSystemTrayOP, NetSystemTrayOrientation, NetSystemTrayOrientationHorz,
-        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
-        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
-+enum { Manager, Xembed, XembedInfo, XLast }; /* Xembed atoms */
- enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
- enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle,
-        ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
-@@ -233,18 +259,23 @@ static int updategeom(void);
- static void updatenumlockmask(void);
- static void updatesizehints(Client *c);
- static void updatestatus(void);
-+static void updatesystray(void);
-+static void updatesystrayicongeom(Client *i, int w, int h);
-+static void updatesystrayiconstate(Client *i, XPropertyEvent *ev);
- static void updatetitle(Client *c);
- static void updatewindowtype(Client *c);
- static void updatewmhints(Client *c);
- static void view(const Arg *arg);
- static Client *wintoclient(Window w);
- static Monitor *wintomon(Window w);
-+static Client *wintosystrayicon(Window w);
- static int xerror(Display *dpy, XErrorEvent *ee);
- static int xerrordummy(Display *dpy, XErrorEvent *ee);
- static int xerrorstart(Display *dpy, XErrorEvent *ee);
- static void zoom(const Arg *arg);
- 
- /* variables */
-+static Systray *systray = NULL;
- static const char broken[] = "broken";
- static char stext[256];
- static int screen;
-@@ -948,15 +1048,32 @@ getatomprop(Client *c, Atom prop)
- 	unsigned char *p = NULL;
- 	Atom da, atom = None;
- 
--	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, XA_ATOM,
-+	/* FIXME getatomprop should return the number of items and a pointer to
-+	 * the stored data instead of this workaround */
-+	Atom req = XA_ATOM;
-+	if (prop == xatom[XembedInfo])
-+		req = xatom[XembedInfo];
-+
-+	if (XGetWindowProperty(dpy, c->win, prop, 0L, sizeof atom, False, req,
- 		&da, &di, &nitems, &dl, &p) == Success && p) {
--		if (nitems > 0)
--			atom = *(Atom *)p;
-+		atom = *(Atom *)p;
-+		if (da == xatom[XembedInfo] && nitems == 2)
-+			atom = ((Atom *)p)[1];
- 		XFree(p);
+@@ -832,22 +951,37 @@ drawbar(Monitor *m)
+ 		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
  	}
- 	return atom;
- }
  
-+unsigned int
-+getsystraywidth()
-+{
-+	unsigned int w = 0;
-+	Client *i;
-+	if(showsystray)
-+		for(i = systray->icons; i; w += i->w + systrayspacing, i = i->next) ;
-+	return w ? w + systrayspacing : 1;
-+}
++    int icons_per_tag[LENGTH(tags)];
++    memset(icons_per_tag, 0, LENGTH(tags) * sizeof(int));
 +
- int
- getrootptr(int *x, int *y)
- {
-@@ -1185,6 +1303,13 @@ maprequest(XEvent *e)
- 	static XWindowAttributes wa;
- 	XMapRequestEvent *ev = &e->xmaprequest;
- 
-+	Client *i;
-+	if ((i = wintosystrayicon(ev->window))) {
-+		sendevent(i->win, netatom[Xembed], StructureNotifyMask, CurrentTime, XEMBED_WINDOW_ACTIVATE, 0, systray->win, XEMBED_EMBEDDED_VERSION);
-+		resizebarwin(selmon);
-+		updatesystray();
-+	}
++    for (int i = 0; i < LENGTH(tags); i++) {
++        if (m->tag_icons[i]) free(m->tag_icons[i]);
 +
- 	if (!XGetWindowAttributes(dpy, ev->window, &wa) || wa.override_redirect)
- 		return;
- 	if (!wintoclient(ev->window))
++        /* set each tag to default value */
++        m->tag_icons[i] = strndup(tags[i], strlen(tags[i]));
++    }
++
+ 	for (c = m->clients; c; c = c->next) {
++        if (c->appicon && strlen(c->appicon) > 0) {
++            applyappicon(m->tag_icons, icons_per_tag, c);
++        }
++
+ 		occ |= c->tags;
+ 		if (c->isurgent)
+ 			urg |= c->tags;
+ 	}
+ 	x = 0;
+ 	for (i = 0; i < LENGTH(tags); i++) {
+-		w = TEXTW(tags[i]);
++		w = TEXTW(m->tag_icons[i]);
+ 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
+-		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
+-		if (occ & 1 << i)
++		drw_text(drw, x, 0, w, bh, lrpad / 2, m->tag_icons[i], urg & 1 << i);
++		if (occ & 1 << i && icons_per_tag[i] == 0)
+ 			drw_rect(drw, x + boxs, boxs, boxw, boxw,
+ 				m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
+ 				urg & 1 << i);
+ 		x += w;
+ 	}
++
+ 	w = TEXTW(m->ltsymbol);
+ 	drw_setscheme(drw, scheme[SchemeNorm]);
+ 	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
